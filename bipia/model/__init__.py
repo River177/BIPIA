@@ -18,6 +18,7 @@ from .llama import (
     Guanaco,
     Llama2,
 )
+from .qwen import Qwen3
 from .vllm_worker import Dolly, StableLM, MPT, Mistral
 from .llm_worker import RwkvModel, OASST, ChatGLM, FastChatT5
 
@@ -46,6 +47,7 @@ LLM_NAME_TO_CLASS = OrderedDict(
         ("guanaco", Guanaco),
         ("llama2", Llama2),
         ("mistral", Mistral),
+        ("qwen3", Qwen3),
     ]
 )
 

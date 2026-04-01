@@ -9,3 +9,14 @@ diff.sh
 config/my_gpt35.yaml
 
 output/
+
+# Generated benchmark datasets with license restrictions
+benchmark/abstract/train.jsonl
+benchmark/abstract/test.jsonl
+benchmark/qa/train.jsonl
+benchmark/qa/test.jsonl
+
+# Local NewsQA source artifacts
+benchmark/qa/newsqa-data-v1.zip
+benchmark/qa/cnn_stories.tgz
+benchmark/qa/raw/
