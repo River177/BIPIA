@@ -1,12 +1,11 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import logging
 import yaml
 from pathlib import Path
 from collections import OrderedDict
-from accelerate.logging import get_logger
 
-from .gpt import GPT35, GPT4, GPT35WOSystem, GPT4WOSystem
 from .llama import (
     Alpaca,
     Vicuna,
@@ -22,14 +21,26 @@ from .qwen import Qwen3
 from .vllm_worker import Dolly, StableLM, MPT, Mistral
 from .llm_worker import RwkvModel, OASST, ChatGLM, FastChatT5
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-LLM_NAME_TO_CLASS = OrderedDict(
+LLM_NAME_TO_CLASS = OrderedDict()
+
+try:
+    from .gpt import GPT35, GPT4, GPT35WOSystem, GPT4WOSystem
+except ModuleNotFoundError as exc:
+    logger.warning("Skip GPT model registration because an optional dependency is missing: %s", exc)
+else:
+    LLM_NAME_TO_CLASS.update(
+        [
+            ("gpt35", GPT35),
+            ("gpt4", GPT4),
+            ("gpt35_wosys", GPT35WOSystem),
+            ("gpt4_wosys", GPT4WOSystem),
+        ]
+    )
+
+LLM_NAME_TO_CLASS.update(
     [
-        ("gpt35", GPT35),
-        ("gpt4", GPT4),
-        ("gpt35_wosys", GPT35WOSystem),
-        ("gpt4_wosys", GPT4WOSystem),
         ("alpaca", Alpaca),
         ("vicuna", Vicuna),
         ("baize", Baize),

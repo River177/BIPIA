@@ -36,11 +36,19 @@ class vLLMModel(BaseModel):
             dtype = "bfloat16"
         else:
             dtype = "float16"
+        llm_kwargs = {}
+        if "max_model_len" in self.config:
+            llm_kwargs["max_model_len"] = self.config["max_model_len"]
+        if "gpu_memory_utilization" in self.config:
+            llm_kwargs["gpu_memory_utilization"] = self.config[
+                "gpu_memory_utilization"
+            ]
         self.model = LLM(
             model=self.config["model_name"],
             trust_remote_code=self.config.get("trust_remote_code", False),
             tensor_parallel_size=tensor_parallel_size,
             dtype=dtype,
+            **llm_kwargs,
         )
         return self.model
 

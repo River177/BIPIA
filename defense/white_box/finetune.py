@@ -3,15 +3,19 @@
 
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
+import json
 import jsonlines
 import wandb
 import yaml
 import pathlib
 from copy import deepcopy
 import os
+import re
+import subprocess
 
 import datasets
 from datasets import concatenate_datasets
+import torch
 
 import transformers
 from transformers import Trainer
@@ -258,6 +262,149 @@ def response_fn(example, pia_builder, responses, response_strategy: str):
         return clean_response
 
 
+def should_keep_example(example: Dict, response_strategy: str) -> bool:
+    if response_strategy != "original":
+        return True
+
+    ideal = example.get("ideal")
+    if isinstance(ideal, list):
+        return len(ideal) > 0
+    return ideal is not None and ideal != ""
+
+
+def tokenize_segments(tokenizer, segments: List[str]) -> List[List[str]]:
+    return [tokenizer.tokenize(segment) for segment in segments]
+
+
+def resolve_sequence_boundary_token_ids(tokenizer) -> tuple[int, int]:
+    bos_token_id = tokenizer.bos_token_id
+    eos_token_id = tokenizer.eos_token_id
+
+    if bos_token_id is None:
+        bos_token_id = eos_token_id
+    if eos_token_id is None:
+        eos_token_id = bos_token_id
+    if bos_token_id is None or eos_token_id is None:
+        raise ValueError(
+            "Tokenizer must define at least one valid boundary token id for supervised fine-tuning."
+        )
+
+    return bos_token_id, eos_token_id
+
+
+def normalize_cuda_version(version: Optional[str]) -> Optional[str]:
+    if not version:
+        return None
+
+    match = re.search(r"(\d+)\.(\d+)", version)
+    if match is None:
+        return None
+    return f"{match.group(1)}.{match.group(2)}"
+
+
+def detect_installed_cuda_version() -> Optional[str]:
+    cuda_homes = [
+        os.environ.get("CUDA_HOME"),
+        os.environ.get("CUDA_PATH"),
+        "/usr/local/cuda",
+    ]
+
+    for cuda_home in cuda_homes:
+        if not cuda_home:
+            continue
+
+        version_json = os.path.join(cuda_home, "version.json")
+        if os.path.exists(version_json):
+            with open(version_json, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            return payload.get("cuda", {}).get("version")
+
+        version_txt = os.path.join(cuda_home, "version.txt")
+        if os.path.exists(version_txt):
+            with open(version_txt, "r", encoding="utf-8") as handle:
+                return handle.read().strip()
+
+    try:
+        result = subprocess.run(
+            ["nvcc", "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    match = re.search(r"release\s+(\d+\.\d+)", result.stdout + result.stderr)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def maybe_adjust_deepspeed_config(
+    deepspeed_config_path: Optional[str],
+    output_dir: str,
+    torch_cuda_version: Optional[str] = None,
+    installed_cuda_version: Optional[str] = None,
+) -> Optional[str]:
+    if not deepspeed_config_path:
+        return deepspeed_config_path
+
+    with open(deepspeed_config_path, "r", encoding="utf-8") as handle:
+        deepspeed_config = json.load(handle)
+
+    offload_optimizer = (
+        deepspeed_config.get("zero_optimization", {}).get("offload_optimizer", {})
+    )
+    if offload_optimizer.get("device") != "cpu":
+        return deepspeed_config_path
+
+    torch_cuda_version = normalize_cuda_version(torch_cuda_version)
+    installed_cuda_version = normalize_cuda_version(
+        installed_cuda_version or detect_installed_cuda_version()
+    )
+    if not torch_cuda_version or not installed_cuda_version:
+        return deepspeed_config_path
+    if torch_cuda_version == installed_cuda_version:
+        return deepspeed_config_path
+
+    adjusted_config = deepcopy(deepspeed_config)
+    adjusted_config["zero_force_ds_cpu_optimizer"] = False
+
+    os.makedirs(output_dir, exist_ok=True)
+    adjusted_path = os.path.join(output_dir, "ds_config.no_forced_cpuadam.json")
+    with open(adjusted_path, "w", encoding="utf-8") as handle:
+        json.dump(adjusted_config, handle, indent=4)
+
+    return adjusted_path
+
+
+def apply_adjusted_deepspeed_config(training_args, adjusted_config_path: str) -> None:
+    with open(adjusted_config_path, "r", encoding="utf-8") as handle:
+        adjusted_config = json.load(handle)
+
+    training_args.deepspeed = adjusted_config_path
+
+    deepspeed_plugin = getattr(training_args, "deepspeed_plugin", None)
+    if deepspeed_plugin is not None and isinstance(
+        getattr(deepspeed_plugin, "deepspeed_config", None), dict
+    ):
+        plugin_config = deepspeed_plugin.deepspeed_config
+        plugin_config["zero_optimization"] = deepcopy(adjusted_config["zero_optimization"])
+        plugin_config["zero_force_ds_cpu_optimizer"] = adjusted_config[
+            "zero_force_ds_cpu_optimizer"
+        ]
+
+    hf_deepspeed_config = getattr(training_args, "hf_deepspeed_config", None)
+    if hf_deepspeed_config is not None and isinstance(
+        getattr(hf_deepspeed_config, "config", None), dict
+    ):
+        hf_config = hf_deepspeed_config.config
+        hf_config["zero_optimization"] = deepcopy(adjusted_config["zero_optimization"])
+        hf_config["zero_force_ds_cpu_optimizer"] = adjusted_config[
+            "zero_force_ds_cpu_optimizer"
+        ]
+
+
 def load_bipia_supervised_data_module(
     tokenizer: transformers.PreTrainedTokenizer, data_args
 ) -> Dict:
@@ -287,6 +434,12 @@ def load_bipia_supervised_data_module(
                 context_data_files[dataset_name][0], context_data_files[dataset_name][1]
             )
             pia_dataset = datasets.Dataset.from_pandas(pia_samples)
+            pia_dataset = pia_dataset.filter(
+                lambda example: should_keep_example(
+                    example, data_args.response_strategy
+                ),
+                desc="Filter examples without supervised targets.",
+            )
 
             responses = {}
             if data_args.response_strategy == "self_clean":
@@ -337,6 +490,12 @@ def load_bipia_supervised_data_module(
                 context_data_files[dataset_name][0], context_data_files[dataset_name][1]
             )
             pia_dataset = datasets.Dataset.from_pandas(pia_samples)
+            pia_dataset = pia_dataset.filter(
+                lambda example: should_keep_example(
+                    example, data_args.response_strategy
+                ),
+                desc="Filter examples without supervised targets.",
+            )
 
             responses = {}
             if data_args.response_strategy == "self_clean":
@@ -393,6 +552,7 @@ def load_bipia_supervised_data_module(
 
     assistant = " ASSISTANT: "
     assistant_input_ids = tokenizer(assistant, add_special_tokens=False).input_ids
+    bos_token_id, eos_token_id = resolve_sequence_boundary_token_ids(tokenizer)
 
     def tokenize_fn(example):
         user_prompt, response = example["conversation"]
@@ -407,10 +567,7 @@ def load_bipia_supervised_data_module(
             user_prompt[end_index:],
         ]
 
-        tokens = [
-            tokenizer.tokenize(t, is_split_into_words=True)
-            for t in user_prompt + [response]
-        ]
+        tokens = tokenize_segments(tokenizer, user_prompt + [response])
 
         if data_args.add_special_context_token:
             user_conv = tokens[0] + ["<data>"] + tokens[1] + ["</data>"] + tokens[2]
@@ -421,13 +578,13 @@ def load_bipia_supervised_data_module(
         response_input_ids = tokenizer.convert_tokens_to_ids(tokens[-1])
 
         input_ids = (
-            [tokenizer.bos_token_id]
+            [bos_token_id]
             + system_input_ids
             + human_input_ids
             + user_conv_input_ids
             + assistant_input_ids
             + response_input_ids
-            + [tokenizer.eos_token_id]
+            + [eos_token_id]
         )
         target = deepcopy(input_ids)
         target[
@@ -493,6 +650,20 @@ def train():
     with open(model_args.llm_config_file, "r") as f:
         llm_config = yaml.load(f, Loader=yaml.SafeLoader)
 
+    torch_cuda_version = normalize_cuda_version(getattr(torch.version, "cuda", None))
+    deepspeed_config_path = maybe_adjust_deepspeed_config(
+        training_args.deepspeed,
+        training_args.output_dir,
+        torch_cuda_version=torch_cuda_version,
+    )
+    if deepspeed_config_path != training_args.deepspeed:
+        rank0_print(
+            "Detected a CUDA toolkit mismatch for DeepSpeed CPUAdam. "
+            "Using adjusted config with optimizer offload preserved and "
+            f"zero_force_ds_cpu_optimizer disabled: {deepspeed_config_path}"
+        )
+        apply_adjusted_deepspeed_config(training_args, deepspeed_config_path)
+
     # load model and tokenizer
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         llm_config["model_name"],
@@ -503,7 +674,10 @@ def train():
         token=llm_config.get("auth_token", None),
         trust_remote_code=llm_config.get("trust_remote_code", False),
     )
-    tokenizer.pad_token = tokenizer.unk_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token or tokenizer.unk_token
+    if tokenizer.pad_token_id is None:
+        raise ValueError("Tokenizer must define a valid pad token for supervised fine-tuning.")
 
     # change model achietecture
     if data_args.add_special_context_token:

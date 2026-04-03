@@ -130,11 +130,11 @@ def import_bipia_model_with_stubs():
 def test_qwen3_config_targets_expected_model():
     config = yaml.safe_load(CONFIG_PATH.read_text())
 
-    assert config == {
-        "load_8bit": False,
-        "model_name": "Qwen/Qwen3-4B-Instruct-2507",
-        "llm_name": "qwen3",
-    }
+    assert config["load_8bit"] is False
+    assert config["model_name"] == "Qwen/Qwen3-4B-Instruct-2507"
+    assert config["llm_name"] == "qwen3"
+    assert config["max_model_len"] == 8192
+    assert config["gpu_memory_utilization"] == 0.95
 
 
 def test_auto_llm_loads_qwen3_from_config_path():
@@ -155,6 +155,7 @@ def test_qwen3_process_fn_uses_tokenizer_chat_template():
     class DummyTokenizer:
         eos_token_id = 42
         unk_token_id = -1
+        pad_token_id = 42
 
         def apply_chat_template(self, messages, tokenize, add_generation_prompt):
             calls["messages"] = messages
@@ -162,18 +163,31 @@ def test_qwen3_process_fn_uses_tokenizer_chat_template():
             calls["add_generation_prompt"] = add_generation_prompt
             return "formatted-prompt"
 
+        def __call__(self, prompt, add_special_tokens, truncation, max_length):
+            calls["tokenized_prompt"] = prompt
+            calls["add_special_tokens"] = add_special_tokens
+            calls["truncation"] = truncation
+            calls["max_length"] = max_length
+            return {
+                "input_ids": [1, 2, 3],
+                "attention_mask": [1, 1, 1],
+            }
+
         def convert_tokens_to_ids(self, token):
             return {"<|im_end|>": 151645}.get(token, self.unk_token_id)
 
     llm.tokenizer = DummyTokenizer()
     llm.kwargs = {"max_new_tokens": 128}
     llm.require_system_prompt = True
+    llm.config = {"max_model_len": 8192}
 
     example = {"id": 1}
     processed = llm.process_fn(example, lambda item: ("system prompt", "user prompt"))
     generation_config = llm.load_generation_config()
 
     assert processed["message"] == "formatted-prompt"
+    assert processed["input_ids"] == [1, 2, 3]
+    assert processed["attention_mask"] == [1, 1, 1]
     assert calls == {
         "messages": [
             {"role": "system", "content": "system prompt"},
@@ -181,7 +195,87 @@ def test_qwen3_process_fn_uses_tokenizer_chat_template():
         ],
         "tokenize": False,
         "add_generation_prompt": True,
+        "tokenized_prompt": "formatted-prompt",
+        "add_special_tokens": False,
+        "truncation": True,
+        "max_length": 8192,
     }
-    assert generation_config.max_tokens == 128
-    assert generation_config.temperature == 0
-    assert generation_config.stop_token_ids == [42, 151645]
+    assert generation_config.max_new_tokens == 128
+    assert generation_config.do_sample is False
+    assert generation_config.eos_token_id == [42, 151645]
+
+
+def test_qwen3_generate_uses_transformers_batch_decode():
+    with import_bipia_model_with_stubs():
+        qwen_module = importlib.import_module("bipia.model.qwen")
+
+    llm = qwen_module.Qwen3.__new__(qwen_module.Qwen3)
+
+    class FakeTensor:
+        def __init__(self, data):
+            self.data = data
+            self.shape = (len(data), len(data[0]))
+
+        def to(self, _device):
+            return self
+
+        def __getitem__(self, item):
+            rows, cols = item
+            if isinstance(rows, slice):
+                selected_rows = self.data[rows]
+            else:
+                selected_rows = [self.data[rows]]
+
+            if isinstance(cols, slice):
+                selected_rows = [row[cols] for row in selected_rows]
+            else:
+                selected_rows = [[row[cols]] for row in selected_rows]
+            return FakeTensor(selected_rows)
+
+    calls = {}
+
+    class DummyTokenizer:
+        eos_token_id = 42
+        unk_token_id = -1
+        pad_token_id = 42
+
+        def batch_decode(self, outputs, skip_special_tokens):
+            calls["decoded_outputs"] = outputs.data
+            calls["skip_special_tokens"] = skip_special_tokens
+            return ["answer one", "answer two"]
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|im_end|>": 151645}.get(token, self.unk_token_id)
+
+    class DummyModel:
+        device = "cuda:0"
+
+        def generate(self, **kwargs):
+            calls["generate_kwargs"] = kwargs
+            return FakeTensor(
+                [
+                    [11, 12, 91, 92],
+                    [21, 22, 93, 94],
+                ]
+            )
+
+    qwen_module.torch.as_tensor = lambda data: FakeTensor(data)
+
+    llm.model = DummyModel()
+    llm.tokenizer = DummyTokenizer()
+    llm.kwargs = {"max_new_tokens": 64}
+    llm.generation_config = llm.load_generation_config()
+
+    responses = llm.generate(
+        {
+            "input_ids": [[11, 12], [21, 22]],
+            "attention_mask": [[1, 1], [1, 1]],
+        }
+    )
+
+    assert responses == ["answer one", "answer two"]
+    assert calls["generate_kwargs"]["generation_config"] is llm.generation_config
+    assert calls["generate_kwargs"]["input_ids"].data == [[11, 12], [21, 22]]
+    assert calls["generate_kwargs"]["attention_mask"].data == [[1, 1], [1, 1]]
+    assert calls["decoded_outputs"] == [[91, 92], [93, 94]]
+    assert calls["skip_special_tokens"] is True

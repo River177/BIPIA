@@ -23,7 +23,6 @@ from accelerate.utils import set_seed
 
 from bipia.model import AutoLLM
 from bipia.data import AutoPIABuilder, DefaultDataCollator, DataCollatorWithPadding
-from bipia.metrics import BipiaEvalFactory
 
 from parameters import parse_args
 
@@ -124,6 +123,7 @@ def inference(args):
         config=args.llm_config_file,
         accelerator=accelerator,
         tensor_parallel_size=args.tensor_parallel_size,
+        max_new_tokens=args.max_new_tokens,
     )
 
     def rename_target(example):
@@ -269,6 +269,8 @@ def inference(args):
 
 
 def evaluate(args):
+    from bipia.metrics import BipiaEvalFactory
+
     accelerator = (
         Accelerator(log_with=args.report_to, logging_dir=args.logging_path)
         if args.with_tracking

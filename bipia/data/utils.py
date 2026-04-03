@@ -44,7 +44,7 @@ class DefaultDataCollator:
                     example[key] = remove_none_name(example[key])
                 batch_rslt[key].append(example[key])
 
-        return batch_rslt
+        return dict(batch_rslt)
 
 
 class DataCollatorWithPadding:
@@ -88,4 +88,4 @@ class DataCollatorWithPadding:
         )
 
         batch_rslt.update(features)
-        return batch_rslt
+        return dict(batch_rslt)
