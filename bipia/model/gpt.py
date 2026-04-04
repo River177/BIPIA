@@ -3,39 +3,21 @@
 
 from typing import Dict, List, Any, Callable, Tuple
 
-import os
-import re
-import time
-import openai
-from openai.error import (
-    RateLimitError,
-    InvalidRequestError,
-    Timeout,
-    APIConnectionError,
-    ServiceUnavailableError,
-    APIError,
-)
+import logging
 
-from accelerate.logging import get_logger
-
+from bipia.openai_compat import OpenAICompatClient
 from .base import BaseModel
 
 __all__ = ["GPTModel", "GPT35", "GPT4"]
 
-logger = get_logger(__name__)
-
-
-def get_retry_time(err_info):
-    z = re.search(r"after (\d+) seconds", err_info)
-    if z:
-        return int(z.group(1))
-    return 1
+logger = logging.getLogger(__name__)
 
 
 class GPTModel(BaseModel):
     def __init__(self, *, config: str | dict = None, **kwargs):
         config = self.load_config(config)
         self.config = config
+        self.client = OpenAICompatClient(config)
 
     def chat_completion(
         self,
@@ -45,54 +27,13 @@ class GPTModel(BaseModel):
         frequency_penalty=0,
         presence_penalty=0,
     ):
-        success = False
-        while not success:
-            try:
-                response = openai.ChatCompletion.create(
-                    api_key=self.config.get("api_key", None),
-                    api_base=self.config.get("api_base", None),
-                    api_type=self.config.get("api_type", None),
-                    api_version=self.config.get("api_version", None),
-                    engine=self.config.get("engine", None),
-                    model=self.config.get("model", None),
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    frequency_penalty=frequency_penalty,
-                    presence_penalty=presence_penalty,
-                )
-                success = True
-            except RateLimitError as e:
-                # logger.warning(e, exc_info=True)
-                retry_time = get_retry_time(str(e))
-                time.sleep(retry_time)
-            except Timeout as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except APIConnectionError as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except APIError as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except ServiceUnavailableError as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except InvalidRequestError as e:
-                logger.warning(e, exc_info=True)
-                success = True
-                response = {"choices": []}
-            except Exception as e:
-                logger.warning(e, exc_info=True)
-                success = True
-                response = {"choices": []}
-        try:
-            rslts = [i["message"]["content"] for i in response["choices"]]
-        except Exception as e:
-            logger.warning(e, exc_info=True)
-            rslts = []
-
-        return rslts
+        return self.client.chat_completion(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+        )
 
     def completion(
         self,
@@ -103,51 +44,14 @@ class GPTModel(BaseModel):
         presence_penalty=0,
         stop=["<|im_end|>"],
     ):
-        success = False
-        while not success:
-            try:
-                response = openai.Completion.create(
-                    api_key=self.config.get("api_key", None),
-                    api_base=self.config.get("api_base", None),
-                    api_type=self.config.get("api_type", None),
-                    api_version=self.config.get("api_version", None),
-                    engine=self.config.get("engine", None),
-                    model=self.config.get("model", None),
-                    prompt=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    frequency_penalty=frequency_penalty,
-                    presence_penalty=presence_penalty,
-                    stop=stop,
-                )
-                success = True
-            except RateLimitError as e:
-                # logger.warning(e, exc_info=True)
-                retry_time = get_retry_time(str(e))
-                time.sleep(retry_time)
-            except Timeout as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except APIConnectionError as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except APIError as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except ServiceUnavailableError as e:
-                logger.debug(e, exc_info=True)
-                time.sleep(1)
-            except InvalidRequestError as e:
-                logger.warning(e, exc_info=True)
-                success = True
-                response = {"choices": []}
-            except Exception as e:
-                logger.warning(e, exc_info=True)
-                success = True
-                response = {"choices": []}
-
-        rslts = [i["text"] for i in response["choices"]]
-        return rslts
+        return self.client.completion(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            stop=stop,
+        )
 
     def generate(self, data: Any, **kwargs):
         temperature = kwargs.pop("temperature", 0)

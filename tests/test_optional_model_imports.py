@@ -27,7 +27,9 @@ class _Logger:
         return None
 
 
-def test_optional_gpt_dependency_does_not_block_qwen_registration(monkeypatch):
+def test_gpt_registration_is_available_without_legacy_openai_error_imports(
+    monkeypatch,
+):
     package_name = "tmp_bipia_model_optional"
     qwen3_cls = _stub_class("Qwen3")
 
@@ -93,4 +95,4 @@ def test_optional_gpt_dependency_does_not_block_qwen_registration(monkeypatch):
     spec.loader.exec_module(module)
 
     assert module.AutoLLM.from_name("qwen3") is qwen3_cls
-    assert "gpt35" not in module.LLM_NAME_TO_CLASS
+    assert "gpt35" in module.LLM_NAME_TO_CLASS
