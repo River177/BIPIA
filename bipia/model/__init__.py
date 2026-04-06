@@ -6,21 +6,6 @@ import yaml
 from pathlib import Path
 from collections import OrderedDict
 
-from .llama import (
-    Alpaca,
-    Vicuna,
-    Baize,
-    StableVicuna,
-    Koala,
-    GPT4ALL,
-    Wizard,
-    Guanaco,
-    Llama2,
-)
-from .qwen import Qwen3
-from .vllm_worker import Dolly, StableLM, MPT, Mistral
-from .llm_worker import RwkvModel, OASST, ChatGLM, FastChatT5
-
 logger = logging.getLogger(__name__)
 
 LLM_NAME_TO_CLASS = OrderedDict()
@@ -39,28 +24,81 @@ else:
         ]
     )
 
-LLM_NAME_TO_CLASS.update(
-    [
-        ("alpaca", Alpaca),
-        ("vicuna", Vicuna),
-        ("baize", Baize),
-        ("stablelm", StableLM),
-        ("stablevicuna", StableVicuna),
-        ("dolly", Dolly),
-        ("rwkv", RwkvModel),
-        ("oasst", OASST),
-        ("chatglm", ChatGLM),
-        ("koala", Koala),
-        ("mpt", MPT),
-        ("t5", FastChatT5),
-        ("gpt4all", GPT4ALL),
-        ("wizard", Wizard),
-        ("guanaco", Guanaco),
-        ("llama2", Llama2),
-        ("mistral", Mistral),
-        ("qwen3", Qwen3),
-    ]
-)
+try:
+    from .llama import (
+        Alpaca,
+        Vicuna,
+        Baize,
+        StableVicuna,
+        Koala,
+        GPT4ALL,
+        Wizard,
+        Guanaco,
+        Llama2,
+    )
+except ModuleNotFoundError as exc:
+    logger.warning(
+        "Skip llama-family model registration because an optional dependency is missing: %s",
+        exc,
+    )
+else:
+    LLM_NAME_TO_CLASS.update(
+        [
+            ("alpaca", Alpaca),
+            ("vicuna", Vicuna),
+            ("baize", Baize),
+            ("stablevicuna", StableVicuna),
+            ("koala", Koala),
+            ("gpt4all", GPT4ALL),
+            ("wizard", Wizard),
+            ("guanaco", Guanaco),
+            ("llama2", Llama2),
+        ]
+    )
+
+try:
+    from .vllm_worker import Dolly, StableLM, MPT, Mistral
+except ModuleNotFoundError as exc:
+    logger.warning(
+        "Skip vLLM model registration because an optional dependency is missing: %s",
+        exc,
+    )
+else:
+    LLM_NAME_TO_CLASS.update(
+        [
+            ("stablelm", StableLM),
+            ("dolly", Dolly),
+            ("mpt", MPT),
+            ("mistral", Mistral),
+        ]
+    )
+
+try:
+    from .llm_worker import RwkvModel, OASST, ChatGLM, FastChatT5
+except ModuleNotFoundError as exc:
+    logger.warning(
+        "Skip worker model registration because an optional dependency is missing: %s",
+        exc,
+    )
+else:
+    LLM_NAME_TO_CLASS.update(
+        [
+            ("rwkv", RwkvModel),
+            ("oasst", OASST),
+            ("chatglm", ChatGLM),
+            ("t5", FastChatT5),
+        ]
+    )
+
+try:
+    from .qwen import Qwen3
+except ModuleNotFoundError as exc:
+    logger.warning(
+        "Skip Qwen model registration because an optional dependency is missing: %s",
+        exc,
+    )
+else:
+    LLM_NAME_TO_CLASS.update([("qwen3", Qwen3)])
 
 
 class AutoLLM:

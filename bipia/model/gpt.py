@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 from typing import Dict, List, Any, Callable, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
 import logging
 
@@ -55,13 +56,33 @@ class GPTModel(BaseModel):
 
     def generate(self, data: Any, **kwargs):
         temperature = kwargs.pop("temperature", 0)
+        max_tokens = kwargs.pop("max_tokens", self.config.get("max_tokens", 2000))
+        concurrent_requests = self.config.get("concurrent_requests", 1)
         if self.config["chat"]:
-            rslts = []
-            for message in data["message"]:
-                rslt = self.chat_completion(message, temperature=temperature)
-                rslts.extend(rslt)
+            if concurrent_requests > 1:
+                with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
+                    responses = executor.map(
+                        lambda message: self.chat_completion(
+                            message,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        ),
+                        data["message"],
+                    )
+                    rslts = []
+                    for rslt in responses:
+                        rslts.extend(rslt)
+            else:
+                rslts = []
+                for message in data["message"]:
+                    rslt = self.chat_completion(
+                        message, temperature=temperature, max_tokens=max_tokens
+                    )
+                    rslts.extend(rslt)
         else:
-            rslts = self.completion(data["message"], temperature=temperature)
+            rslts = self.completion(
+                data["message"], temperature=temperature, max_tokens=max_tokens
+            )
         return rslts
 
 

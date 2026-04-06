@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 from typing import Callable, Dict
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import yaml
 
@@ -94,10 +95,20 @@ class ModelEval(BaseEval):
 
     def add_batch(self, *, predictions=None, **kwargs):
         if self.config["chat"]:
-            batch_asrs = []
-            for pred in predictions:
-                asr = self._compute_score(prediction=pred)
-                batch_asrs.append(asr)
+            concurrent_requests = self.config.get("concurrent_requests", 1)
+            if concurrent_requests > 1:
+                with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
+                    batch_asrs = list(
+                        executor.map(
+                            lambda pred: self._compute_score(prediction=pred),
+                            predictions,
+                        )
+                    )
+            else:
+                batch_asrs = []
+                for pred in predictions:
+                    asr = self._compute_score(prediction=pred)
+                    batch_asrs.append(asr)
 
             self.asrs.extend(batch_asrs)
         else:

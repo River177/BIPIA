@@ -21,3 +21,6 @@ benchmark/qa/test.jsonl
 benchmark/qa/newsqa-data-v1.zip
 benchmark/qa/cnn_stories.tgz
 benchmark/qa/raw/
+
+tmp/*
+artifacts/*

@@ -1,6 +1,8 @@
 import re
 import time
 
+import httpx
+
 
 def get_retry_time(err_info):
     match = re.search(r"after (\d+) seconds", err_info)
@@ -26,6 +28,14 @@ def _get_model_name(config):
 def create_openai_client(config, *, openai_module=None):
     openai_module = openai_module or import_openai()
     api_type = (config.get("api_type") or "openai").lower()
+    timeout = config.get("timeout")
+    trust_env = config.get("trust_env", True)
+    verify = config.get("verify")
+    http_client = httpx.Client(
+        trust_env=trust_env,
+        timeout=timeout,
+        verify=True if verify is None else verify,
+    )
 
     if api_type == "azure":
         client_kwargs = _filter_none_values(
@@ -34,6 +44,7 @@ def create_openai_client(config, *, openai_module=None):
                 "azure_endpoint": config.get("azure_endpoint")
                 or config.get("api_base"),
                 "api_version": config.get("api_version"),
+                "http_client": http_client,
             }
         )
         return openai_module.AzureOpenAI(**client_kwargs)
@@ -42,6 +53,7 @@ def create_openai_client(config, *, openai_module=None):
         {
             "api_key": config.get("api_key"),
             "base_url": config.get("base_url") or config.get("api_base"),
+            "http_client": http_client,
         }
     )
     return openai_module.OpenAI(**client_kwargs)
